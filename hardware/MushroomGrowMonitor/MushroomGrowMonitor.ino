@@ -3,7 +3,7 @@
  * For more information goto: https://github.com/funvill/MushroomGrowMonitor/ 
  * 
  * 
- * Last updated: 2016 Oct 30  
+ * Last updated: 2017 Jan 09  
  *
  * Requirments 
  * - ESP8266 
@@ -21,24 +21,39 @@
  
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266WiFiMulti.h>
 #include <ESP8266HTTPClient.h>
 #include <OneWire.h>
 
+
+// WiFiManager library
+// https://github.com/tzapu/WiFiManager
+#include <EEPROM.h>             // Allowes for write to the EPROM
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <WiFiManager.h>    
+
+
 // Version 
-static const unsigned short VERSION_MAJOR	= 1 ; 
-static const unsigned short VERSION_MINOR	= 0 ;
-static const unsigned short VERSION_PATCH	= 0 ;
+static const unsigned short VERSION_MAJOR = 1 ; 
+static const unsigned short VERSION_MINOR = 0 ;
+static const unsigned short VERSION_PATCH = 2 ;
 
 // Settings 
 static const unsigned int  SETTING_BAUDRATE       = 115200 ;
 static const unsigned char SETTING_ONEWIRE_BUS    = D2 ; // D2 
 static const bool SETTING_ONLINE_ENABLE           = true ;
-static const bool SETTING_ONLINE_POLLING_DELAY    = 10 ; 
-static const char SETTING_ONLINE_PRIVATE_KEY[]    = "xxxxxxxxxxxx" ;
+static const char SETTING_ONLINE_POLLING_DELAY    = 60 ; 
+static const char SETTING_ONLINE_PRIVATE_KEY[]    = "XXXXXXXXXXXXXXX" ;
 static const char SETTING_ONLINE_HOST[]           = "data.abluestar.com" ;
-static const char SETTING_WIFI_SSID[]             = "yyyyyyyyyyyy"; 
-static const char SETTING_WIFI_PASSWORD[]         = "zzzzzzzzzzzz"; 
+
+/**
+ * Busy LED, this LED is brought out to the front of the device and is also on the 
+ * top of the huzzah board. This is used to give error codes and status messages. 
+ * under normal working procedure it should blink once a second.  
+ */ 
+static const char HARDWARE_PIN_BUSY             = BUILTIN_LED  ;
+static const char HARDWARE_BUSY_ON              = HIGH ;
+static const char HARDWARE_BUSY_OFF             = LOW ;
 
 // Consts 
 static const unsigned char ONE_WIRE_SERIAL_LENGTH = 8 ; 
@@ -46,7 +61,6 @@ static const unsigned char ONE_WIRE_SERIAL_LENGTH = 8 ;
 
 
 OneWire  ds( SETTING_ONEWIRE_BUS ); 
-ESP8266WiFiMulti WiFiMulti;
 HTTPClient httpClient;
 
 void setup() {
@@ -60,6 +74,10 @@ void setup() {
   delay(1000);
   USE_SERIAL.println("FYI: Starting up....");
 
+  
+  pinMode(HARDWARE_PIN_BUSY, OUTPUT);  
+  digitalWrite(HARDWARE_PIN_BUSY, HARDWARE_BUSY_ON);
+
   // Print gateway version. 
   USE_SERIAL.print("FYI: Version: ");
   USE_SERIAL.print(VERSION_MAJOR);
@@ -68,16 +86,30 @@ void setup() {
   USE_SERIAL.print(".");
   USE_SERIAL.print(VERSION_PATCH);
   USE_SERIAL.println();
-  
-  // Connect to wifi 
-  if( SETTING_ONLINE_ENABLE ) { 
-    WiFiMulti.addAP(SETTING_WIFI_SSID, SETTING_WIFI_PASSWORD);
-  }
 
+  // Generate the device name 
+  char deviceName[32] ; 
+  sprintf( deviceName, "esp%d", ESP.getChipId() ); 
+  
+  USE_SERIAL.print("Chip: ");
+  USE_SERIAL.print( deviceName); 
+  USE_SERIAL.println();
+
+
+    // WiFiManager
+  // Local intialization. Once its business is done, there is no need to keep it around
+  WiFiManager wifiManager;
+  wifiManager.autoConnect(deviceName);
+  
+  // Print the wifi connection details. 
+  USE_SERIAL.println("[WiFi] WiFi connected");
 
   // All done. 
   USE_SERIAL.println("FYI: Done start up.");   
   USE_SERIAL.println(""); 
+  digitalWrite(HARDWARE_PIN_BUSY, HARDWARE_BUSY_OFF);
+  
+
 }
 
 
@@ -100,20 +132,19 @@ bool httpGetRequest( String serial, String value ) {
   url += serial ; 
   url += "&private_key=";
   url += String( SETTING_ONLINE_PRIVATE_KEY ) ; 
- 
-  // httpClient.begin(url);
+
   httpClient.begin(SETTING_ONLINE_HOST, 80, url);
   int httpCode = httpClient.GET();
   if(httpCode > 0) {
       USE_SERIAL.printf("[HTTP] GET... code: %d\n", httpCode);
 
       // file found at server
-      if(httpCode == HTTP_CODE_OK) {
+      if(httpCode == 200) {
           USE_SERIAL.print("[HTTP] "); 
           httpClient.writeToStream(&USE_SERIAL);
       }
   } else {
-      USE_SERIAL.printf("[HTTP] GET... failed, error: %s\n", httpClient.errorToString(httpCode).c_str());
+      USE_SERIAL.printf("[HTTP] GET... failed, error: %d\n", httpCode);
   }
   httpClient.end();
   USE_SERIAL.println("");
@@ -141,6 +172,7 @@ void GetOneWireValues() {
     oneWireSensorsFound = 0 ; 
     ds.reset_search();
     delay(250);
+    GetOneWireValues(); 
     return;
   }
 
@@ -248,15 +280,21 @@ void GetOneWireValues() {
   httpGetRequest( serialString, String( celsius ) ) ;
 }
 
-void loop() {
-  // wait for WiFi connection
-  if((WiFiMulti.run() != WL_CONNECTED)) {
-    // We are not connected to the internet. 
-    USE_SERIAL.println("Error: Not connected to wifi yet.");
-    delay(200);
-    return; 
+
+void TogleLED() {  
+  static int ledState = HARDWARE_BUSY_OFF;
+  if (ledState == HARDWARE_BUSY_ON) {
+    ledState = HARDWARE_BUSY_OFF; 
+  } else {
+    ledState = HARDWARE_BUSY_ON; 
   }
-  
+}
+
+void loop() {
+  digitalWrite(HARDWARE_PIN_BUSY, HARDWARE_BUSY_ON);
   GetOneWireValues(); 
+  digitalWrite(HARDWARE_PIN_BUSY, HARDWARE_BUSY_OFF);
+
+  USE_SERIAL.printf("Waiting %d seconds... \n", SETTING_ONLINE_POLLING_DELAY);
   delay(1000 * SETTING_ONLINE_POLLING_DELAY );
 }
